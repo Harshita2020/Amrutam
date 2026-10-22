@@ -1,5 +1,7 @@
 # Amrutam Telemedicine Backend — API Contract
 
+**Current submission status:** See the final submission update below and `amrutam-backend/openapi.json` for implemented MFA, clinical and admin endpoints; earlier phase-specific status text is historical.
+
 **Document type:** API contract and endpoint reference  
 **Status:** Phase 2 authentication endpoints, Phase 3 doctor profiles/discovery/availability endpoints, and Phase 4 appointment booking and cancellation endpoints are implemented and tested; other endpoints remain planned unless explicitly verified in the repository
 **Base path:** `/api/v1`  
@@ -858,3 +860,29 @@ As of the latest development log:
 ## 14. Next implementation task
 
 Implement **Phase 5 — Authentication Part 2: Security Hardening** (MFA, sensitive-resource authorization, and audit review).
+
+## Submission implementation update — 22 October 2026
+
+This section supersedes earlier planned-only references to Phases 5, 6, 8 and 9. The machine-readable authority for implemented request schemas is `amrutam-backend/openapi.json` (OpenAPI 3.0.3, 27 paths). Root `SUBMISSION.md` records verified scope and deployment limitations.
+
+### Phase 5 — MFA and sessions
+
+`POST /auth/mfa/enroll` requires authentication and `{password}`. It returns `{data:{secret,otpauthUri,expiresIn:600}}`; never log these values. The pending encrypted seed expires after ten minutes. `POST /auth/mfa/confirm` requires authentication and `{code}` (six digits); it returns `{data:{enabled:true,recoveryCodes:[...],loginRequired:true}}`. Eight recovery codes are displayed once and stored hashed. Confirmation invalidates existing JWTs.
+
+`POST /auth/login` now accepts optional `code` or `recoveryCode` alongside email/password. An enrolled user must supply an unused valid factor. TOTP checks use a +/- one-step window and persist the consumed step transactionally. Recovery codes are single-use under a user row lock. JWT claims add `sv` (session version) and `mfa`; authentication checks database state. `POST /auth/logout-all` revokes all existing sessions. Enrollment endpoints/login/registration use a shared process-local 20-request/15-minute IP throttle.
+
+MFA is mandatory for doctor/admin clinical routes and all admin routes. Patient MFA is optional. There is no public MFA reset/disable bypass. Operator-assisted lost-factor recovery, email verification and password-reset delivery remain unimplemented.
+
+### Phase 6 — Clinical operations
+
+`GET /consultations/me` supports limit (default 20, max 50), offset (max 10000), and optional status; it lists only the caller's records for patient/doctor roles. `GET /consultations/:id` permits the patient owner, assigned doctor or MFA-authenticated admin. Clinical reads are audited.
+
+`PATCH /consultations/:id/status` requires an approved assigned doctor with MFA. Accepts `{status:"in_progress"}` or `{status:"completed"}` and enforces scheduled -> in_progress -> completed. Repeating the current state returns 200 without a duplicate state-change event. Invalid transitions return 409; cancellation remains on the booking route.
+
+`POST /consultations/:id/prescriptions` requires the assigned approved doctor with MFA and a mandatory 1–200-character `Idempotency-Key`. Body: items (1–30) containing medicationName (1–200 chars), instructions (1–1000 chars), quantity (integer 1–10000), plus optional notes (max 2000). Consultation must be in_progress or completed. Doctor-scoped key retries return the existing 201 response; changed details or consultation return 409. Prescriptions are immutable and include id, consultationId, doctorId, details and createdAt. `GET` on the same path supports bounded limit/offset and enforces clinical resource access.
+
+### Admin and operational additions
+
+`GET /admin/analytics` returns total/scheduled/inProgress/completed/cancelled counts over consultation creation timestamps, default last 30 days and maximum 366-day range. `PATCH /admin/doctors/:id/verification` accepts status pending/approved/rejected. `GET /admin/audit-logs` uses limit (max 100) and before (descending numeric ID cursor). `GET /admin/metrics` returns Prometheus text. All require admin MFA; business admin actions/reads are audited. `PATCH /users/me` requires patient role and accepts fullName plus optional nullable phone.
+
+Payment table persistence remains a future integration boundary; no gateway, refunds or webhook mutation endpoints are exposed. Clinical mutations enqueue asynchronous aggregate refreshes in the same transaction; the worker processes jobs idempotently with bounded retries. These facts do not establish production availability, compliance or load targets.

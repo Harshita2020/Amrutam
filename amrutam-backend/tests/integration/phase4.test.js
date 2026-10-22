@@ -45,7 +45,7 @@ async function state(id) {
 }
 
 beforeAll(async () => {
-  expect(await runMigrations()).toHaveLength(4);
+  await runMigrations();
   expect(await runMigrations()).toEqual([]);
   doctor = await user('doctor');
   patient = await user('patient');

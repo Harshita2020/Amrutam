@@ -17,3 +17,12 @@ describe('unknown routes', () => {
     expect(response.body.error.code).toBe('NOT_FOUND');
   });
 });
+
+describe('OpenAPI document', () => {
+  it('serves the checked-in API schema', async () => {
+    const response = await request(app).get('/api/v1/openapi.json');
+    expect(response.status).toBe(200);
+    expect(response.body.openapi).toBe('3.0.3');
+    expect(response.body.paths['/consultations/{id}/prescriptions'].post).toBeDefined();
+  });
+});

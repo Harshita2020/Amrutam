@@ -155,3 +155,7 @@ Use the output to decide where the authentication modules, routes, middleware, a
 ## Working rule
 
 **Build in dependency order. Test as you go. Document honestly. Do not overbuild a phase while core workflows remain unfinished.**
+
+## Submission status update — 2026-10-22
+
+The submission pass delivered Phase 5 MFA/session security, Phase 6 clinical lifecycle/prescriptions, Phase 7 admin analytics/audit/doctor verification with an explicit payment-provider boundary, Phase 8 OpenAPI/testing/CI, Phase 9 metrics/logs/traces/async jobs, and Phase 10 container infrastructure plus architecture/security/operations/demo documentation. See SUBMISSION.md for exact evidence and remaining delivery steps. Earlier sections remain the planning history, not claims of hosted performance or production completion.

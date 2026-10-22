@@ -119,6 +119,7 @@ describe('POST /api/v1/auth/login', () => {
   it('uses the same generic error for unknown email and incorrect password', async () => {
     query
       .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] }) // Failed-login audit
       .mockResolvedValueOnce({ rows: [{ ...user, password_hash: passwordHash }] });
 
     const unknownUser = await request(app)

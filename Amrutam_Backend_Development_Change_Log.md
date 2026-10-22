@@ -323,3 +323,33 @@ MFA, account recovery, advanced authorization boundaries, and security review.
 - Read-only development schema check confirmed 004 was missing. Applied only pending migration 004 through the migration runner. Verified all expected indexes, removal of `consultations_slot_id_key`, and unchanged user/slot/consultation/audit row counts.
 
 **Remaining boundaries:** Phase 5 MFA/authentication hardening, later clinical/payment/admin modules, production operations, and dependency remediation remain outside this change. No performance or availability targets were measured. Existing source organization is retained; no broad refactor or Git commit was performed.
+
+## Submission pass — Phases 5–10, 2026-10-22
+
+The original assignment PDF was read and reconciled with the existing PRD. Work prioritized its core flows, critical security/idempotency, observability, infrastructure and submission deliverables. Payments are explicitly a provider integration boundary; the assignment names payment storage but does not require a selected live gateway.
+
+Implemented encrypted-seed authenticator MFA, pending-enrollment expiry, replay protection, hashed one-time recovery codes, session-version revocation, dedicated auth throttling and login auditing. Added patient profile updates; clinical read/list/status routes; doctor-only immutable prescriptions with concurrent idempotency; MFA-protected admin analytics, doctor verification, audit reading and metrics. Clinical services receive the database pool through injection. Mutation and audit/outbox changes are transactional.
+
+Added a transactional aggregate-refresh worker with idempotent snapshots, bounded retries/jitter and failed-job state. Added JSON request logs/correlation IDs, Prometheus counters/histograms/process metrics and opt-in preloaded OpenTelemetry HTTP/Express/PostgreSQL instrumentation. An actual local OTLP receiver smoke test received trace exports from HTTP requests. No public collector or patient data was used.
+
+Added OpenAPI 3.0.3 (27 paths), generator and validator; non-root Dockerfile; PostgreSQL/migration/API/worker/Jaeger Compose definitions; Caddy HTTPS production overlay; CI install/test/audit/build workflow; manual GHCR publication workflow; root/backend READMEs, security/threat-model document, operations/recovery guide and demo recording sequence. Created and visually inspected a four-page architecture PDF. Remote CI/publication/deployment and the actual five-minute video remain developer delivery steps.
+
+Dependency work: installed OTPAuth, Prometheus/OpenTelemetry and OpenAPI validation libraries; removed vulnerable Nodemon in favor of native Node watch; upgraded Vitest to 4.1.12. The full npm audit reported zero vulnerabilities. No forced blanket audit fix was used.
+
+Migration 005 was tested in disposable PostgreSQL before being applied locally. Final local checks confirmed all seven security columns with their data types/nullability, both outbox/snapshot tables, and unique/valid index flags plus exact definitions for consultations_active_slot_uidx and prescriptions_doctor_key_uidx. User/consultation/prescription/audit row counts were unchanged. A fresh MFA encryption key was added only to ignored local .env; no key or credential was printed. Migration 004's partial-index predicate was also inspected this time, closing the earlier verification limitation.
+
+Verification: final commands/results are recorded in SUBMISSION.md. The 18 integration tests cover original booking races plus MFA enrollment/session revocation/TOTP/recovery, clinical state transitions, prescription idempotency/authorization, metrics restrictions and job execution. Docker image built successfully; Compose syntax passed. Initial local OpenAPI smoke found an incorrect relative path; it was fixed and a regression test was added before final checks.
+
+Limits: no cloud deployment, high availability or performance targets measured; no backup restore drill; no legal compliance claim. Password reset/email delivery, distributed throttling, managed secrets/retention, payment providers, and production infrastructure hardening remain explicit follow-ups. No automatic commit or push was performed.
+
+### Final submission verification
+
+- Regression/security: 107 passed across seven suites.
+- PostgreSQL integration: 18 passed across two suites; disposable databases removed.
+- OpenAPI: 3.0.3 validated, 27 paths; HTTP schema serving regression passed.
+- Dependency audit: zero vulnerabilities.
+- Observability smoke: health/OpenAPI requests succeeded and one OTLP trace export reached a temporary local receiver.
+- Final Docker image built successfully; runtime smoke used network isolation and dummy configuration, confirmed non-root UID 1000, health 200, OpenAPI 200 and unauthenticated clinical access 401; container removed automatically.
+- Compose configuration validated with placeholder secrets. Remote CI, publication and deployment not executed.
+- Four-page architecture PDF rendered and all four pages visually inspected.
+- Git diff whitespace check passed; ignored .env and temporary PDF renders confirmed. Source changes remain uncommitted for developer review.

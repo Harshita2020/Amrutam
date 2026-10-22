@@ -21,7 +21,7 @@ try {
   created = true;
   target.pathname = `/${database}`;
   console.log('Created disposable PostgreSQL test database.');
-  const child = spawn(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.integration.config.js'], {
+  const child = spawn(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.integration.config.js', ...process.argv.slice(2)], {
     stdio: 'inherit',
     windowsHide: true,
     env: {
@@ -30,7 +30,8 @@ try {
       DATABASE_URL: target.toString(),
       PHASE4_TEST_DATABASE: database,
       JWT_SECRET: 'integration-only-secret-never-use-in-production',
-      JWT_EXPIRES_IN: '15m'
+      JWT_EXPIRES_IN: '15m',
+      MFA_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
     }
   });
   process.exitCode = await new Promise((resolve, reject) => {

@@ -8,7 +8,9 @@ const tokenClaimsSchema = z.object({
   sub: z.uuid(),
   role: z.enum(['patient', 'doctor', 'admin']),
   iat: z.number().int().nonnegative(),
-  exp: z.number().int().positive()
+  exp: z.number().int().positive(),
+  sv: z.number().int().nonnegative().optional(),
+  mfa: z.boolean().optional()
 }).strict();
 
 export async function authenticate(req, res, next) {
@@ -30,11 +32,13 @@ export async function authenticate(req, res, next) {
   }
 
   const result = await pool.query(
-    'SELECT id, email, role, is_active FROM users WHERE id = $1',
+    'SELECT id, email, role, is_active, session_version, mfa_enabled FROM users WHERE id = $1',
     [claims.data.sub]
   );
   const user = result.rows[0];
-  if (!user || !user.is_active || user.role !== claims.data.role) {
+  if (!user || !user.is_active || user.role !== claims.data.role ||
+      (user.session_version ?? 0) !== (claims.data.sv ?? 0) ||
+      (user.mfa_enabled && !claims.data.mfa)) {
     return next(httpError(401, 'UNAUTHENTICATED', 'Authentication is invalid or expired'));
   }
 
@@ -42,7 +46,8 @@ export async function authenticate(req, res, next) {
     userId: user.id,
     email: user.email,
     role: user.role,
-    isActive: user.is_active
+    isActive: user.is_active,
+    mfaVerified: Boolean(user.mfa_enabled && claims.data.mfa)
   };
   return next();
 }

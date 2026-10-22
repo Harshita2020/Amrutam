@@ -3,14 +3,12 @@ export function errorHandler(error, req, res, next) {
 
   const status = error.type === 'entity.parse.failed'
     ? 400
+    : error.type === 'entity.too.large' ? 413
     : Number.isInteger(error.statusCode) ? error.statusCode : 500;
   if (status >= 500) {
     // Do not expose stack traces or internal error details to API clients.
-    console.error('Unhandled request error', {
-      method: req.method,
-      path: req.path,
-      errorName: error.name
-    });
+    console.error(JSON.stringify({ level: 'error', event: 'request_failed', requestId: req.requestId,
+      method: req.method, route: req.route?.path ?? 'unmatched', errorName: error.name }));
   }
 
   res.status(status).json({

@@ -1,5 +1,7 @@
 # Amrutam Telemedicine Backend — System Architecture
 
+**Current submission reference:** `ARCHITECTURE_SUBMISSION.pdf`, `ARCHITECTURE_BRIEF.md` and `SUBMISSION.md` describe the delivered security/clinical/operations additions. Earlier phase snapshots below are historical.
+
 **Document type:** Main architecture reference  
 **Status:** Target architecture / implementation guide  
 **Stack:** Node.js, Express, PostgreSQL, REST API  
@@ -506,3 +508,7 @@ Target deployment:
 - OpenAPI, CI/CD, containers/IaC, production observability, load testing, and backup/restore validation.
 
 This document is the main design reference, not proof of implementation. Update it when architecture decisions change and record the reason in `Amrutam_Backend_Development_Change_Log.md`. Keep `API_CONTRACT.md` synchronized with the actual API and OpenAPI specification.
+
+## Submission implementation update — 2026-10-22
+
+Phases 5–10 now have a concrete submission implementation: encrypted-seed TOTP MFA and recovery codes, session revocation, clinical lifecycle/prescriptions, admin analytics/audit/verification, OpenAPI, CI/container definitions, structured logs/metrics/traces and transactional async analytics jobs. See `ARCHITECTURE_SUBMISSION.pdf` (four pages), `ARCHITECTURE_BRIEF.md`, `SECURITY.md`, `OPERATIONS.md` and `SUBMISSION.md`. Earlier planned status statements are historical; the submission report is the current scope/status authority. Payments remain a schema-only provider boundary; cloud deployment, HA, performance and backup restore guarantees are unverified.
