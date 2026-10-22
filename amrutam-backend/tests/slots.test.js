@@ -163,6 +163,7 @@ describe('PATCH /api/v1/doctors/me/slots/:slotId (Update Slot)', () => {
 
     client.query
       .mockResolvedValueOnce({ rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rows: [] }) // Doctor overlap lock
       .mockResolvedValueOnce({
         rows: [{ id: slotId, doctor_id: doctor1Id, starts_at: futureStartsAt, ends_at: futureEndsAt, status: 'available' }]
       }) // Select slot for update
@@ -199,9 +200,11 @@ describe('PATCH /api/v1/doctors/me/slots/:slotId (Update Slot)', () => {
 
     client.query
       .mockResolvedValueOnce({ rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rows: [] }) // Doctor overlap lock
       .mockResolvedValueOnce({
         rows: [{ id: slotId, doctor_id: doctor1Id, starts_at: futureStartsAt, ends_at: futureEndsAt, status: 'available' }]
       }) // Select slot for update
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // No consultation history
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // Overlap check
       .mockResolvedValueOnce({
         rows: [{
@@ -234,6 +237,7 @@ describe('PATCH /api/v1/doctors/me/slots/:slotId (Update Slot)', () => {
 
     client.query
       .mockResolvedValueOnce({ rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rows: [] }) // Doctor overlap lock
       .mockResolvedValueOnce({
         rows: [{ id: slotId, doctor_id: doctor2Id, starts_at: futureStartsAt, ends_at: futureEndsAt, status: 'available' }]
       }) // slot belongs to doctor2
@@ -257,6 +261,7 @@ describe('PATCH /api/v1/doctors/me/slots/:slotId (Update Slot)', () => {
 
     client.query
       .mockResolvedValueOnce({ rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rows: [] }) // Doctor overlap lock
       .mockResolvedValueOnce({
         rows: [{ id: slotId, doctor_id: doctor1Id, starts_at: futureStartsAt, ends_at: futureEndsAt, status: 'booked' }]
       })

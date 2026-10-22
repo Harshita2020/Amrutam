@@ -265,6 +265,9 @@ router.patch('/me/slots/:slotId', authenticate, requireRole('doctor'), async (re
   try {
     await client.query('BEGIN');
 
+    // Same lock/order as creation: serialize all overlap-changing writes for this doctor.
+    await client.query('SELECT user_id FROM doctor_profiles WHERE user_id = $1 FOR UPDATE', [req.auth.userId]);
+
     const slotResult = await client.query(
       'SELECT id, doctor_id, starts_at, ends_at, status FROM availability_slots WHERE id = $1 FOR UPDATE',
       [slotId]
@@ -286,6 +289,14 @@ router.patch('/me/slots/:slotId', authenticate, requireRole('doctor'), async (re
       throw httpError(409, 'SLOT_ALREADY_BOOKED', 'Cannot update a booked slot');
     }
 
+    // Cancelled consultation history still refers to these times. Use a new slot to reschedule.
+    if (updates.startsAt || updates.endsAt) {
+      const references = await client.query('SELECT id FROM consultations WHERE slot_id = $1 LIMIT 1', [slotId]);
+      if (references.rowCount > 0) {
+        throw httpError(409, 'SLOT_REFERENCED', 'Cannot change timings of a slot referenced by a consultation');
+      }
+    }
+
     const newStartsAt = updates.startsAt ? new Date(updates.startsAt) : new Date(slot.starts_at);
     const newEndsAt = updates.endsAt ? new Date(updates.endsAt) : new Date(slot.ends_at);
     const newStatus = updates.status ?? slot.status;
@@ -295,7 +306,7 @@ router.patch('/me/slots/:slotId', authenticate, requireRole('doctor'), async (re
       throw httpError(400, 'VALIDATION_ERROR', 'endsAt must be after startsAt');
     }
 
-    if (updates.startsAt && newStartsAt.getTime() <= Date.now()) {
+    if ((updates.startsAt || updates.endsAt || newStatus === 'available') && newStartsAt.getTime() <= Date.now()) {
       await client.query('ROLLBACK');
       throw httpError(400, 'VALIDATION_ERROR', 'Slot start time must be in the future');
     }

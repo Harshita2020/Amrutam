@@ -10,6 +10,8 @@
 
 ## Current Status
 
+**Latest verification — 2026-10-22, Phase 4 hardening:** Phase 4 is complete for its documented scope. `npm test` passes 100 tests across five suites; `npm run test:integration` passes 12 tests against a disposable local PostgreSQL database. Migration 004 is now applied to the development database with user, slot, consultation, and audit row counts preserved. Earlier phase summaries below retain their historical results; pending-migration statements are superseded by this update.
+
 **Phase 1 — Foundation and Database: COMPLETE**
 
 Confirmed so far:
@@ -24,8 +26,20 @@ Confirmed so far:
 **Phase 2 — Core Authentication: COMPLETE (verified).**
 - Patient/doctor registration, password hashing, login/JWT, auth middleware, RBAC helper, and protected identity endpoint are implemented.
 - Additive normalized-email unique-index migration 002 was applied and verified.
-- Final regression run: `npm test` — 2 files passed, 27 tests passed.
-- Git was initialized at `D:\Amrutam`; files remain untracked and nothing is staged or committed.
+- Regression run: `npm test` — 2 files passed, 27 tests passed.
+
+**Phase 3 — Doctor Profiles, Availability, and Search: COMPLETE (verified).**
+- Public doctor search/discovery, doctor profile updates, and transactional availability slot management implemented.
+- Additive migration 003 applied; automated baseline tracking in migration runner.
+- Regression run: `npm test` — 4 files passed, 63 tests passed.
+
+**Phase 4 — Appointment Booking: COMPLETE (verified, pending manual review & migration 004 execution).**
+- Appointment booking (`POST /api/v1/bookings`) with slot row-locking, double-booking prevention, doctor discoverability check, and idempotency key handling (replays & conflicts).
+- Patient bookings listing (`GET /api/v1/bookings/me`) with cursor pagination and status/date filtering.
+- Booking details read (`GET /api/v1/bookings/:bookingId`) with resource-level authorization (patient owner, assigned doctor, admin).
+- Appointment cancellation (`POST /api/v1/bookings/:bookingId/cancel`) with state machine validation, slot release back to `available`, and audit logging.
+- Additive migration `004_booking_and_cancellations.sql` prepared for manual review/application.
+- Test suite run: `npm test` — 5 files passed, 95 tests passed.
 
 ## Running Change Log
 
@@ -231,10 +245,81 @@ The connection settings in `.env` were corrected. The database password had been
 - Database catalog verification: Inspected `information_schema.columns` and `pg_indexes` for `doctor_profiles` and `availability_slots`, confirming columns (`verification_status`, `updated_at`) and indexes (`idx_doctor_profiles_discoverable`, `idx_slots_doctor_status_start`) in PostgreSQL 16.
 - Manual verification: The developer is currently conducting manual HTTP verification using Thunder Client before committing.
 
-## Next Phase — Phase 4: Appointment Booking
+## Phase 4 — Appointment Booking: COMPLETE (verified, pending manual review & migration 004 execution)
 
-Implement slot reservation, booking transactions, idempotency key tracking, and concurrency protection against double-booking.
+**Implemented:**
+- Appointment booking endpoint (`POST /api/v1/bookings`):
+  - Strictly derives patient identity from verified JWT `sub` (`req.auth.userId`). Role must be `patient`; doctors and admins receive `403 FORBIDDEN`.
+  - Validates `slotId` as a valid UUID and rejects unexpected request fields.
+  - Concurrency & double-booking prevention: executes within an atomic PostgreSQL transaction (`BEGIN ... COMMIT`).
+  - Acquires row-level exclusive lock on the availability slot (`SELECT ... FROM availability_slots WHERE id = $1 FOR UPDATE`) to serialize concurrent booking attempts.
+  - Verifies slot exists (`404 SLOT_NOT_FOUND`), is bookable (`status = 'available'`), and is in the future (`starts_at > NOW()`).
+  - Verifies the assigned doctor is active (`is_active = TRUE`) and approved (`verification_status = 'approved'`).
+  - Ensures patient profile row exists in `patient_profiles` (`ON CONFLICT (user_id) DO NOTHING`) to satisfy relational foreign key constraints.
+  - Atomically marks the slot `status = 'booked'`.
+  - Inserts consultation with `idempotency_key` and catches database unique constraint violations (`23505`) as an additional database-level guard.
+  - Appends audit log entry (`BOOKING_CREATED`) capturing patient, slot, doctor, timing, and idempotency key.
+- Idempotency handling:
+  - Supports `Idempotency-Key` header with validation (rejects empty/whitespace keys).
+  - Fast-check and in-transaction check against `consultations(patient_id, idempotency_key)`.
+  - Replay behavior: identical requests with matching `slotId` replay the original `201 Created` outcome without duplicating work.
+  - Conflict detection: reusing the same key with a different request payload returns `409 IDEMPOTENCY_KEY_REUSED`.
+- Patient bookings listing (`GET /api/v1/bookings/me`):
+  - Patient only; returns caller's bookings with joined doctor details and slot timings.
+  - Bounded cursor pagination (`limit`, `nextCursor`) and filters for `status`, `from`, and `to`.
+- Single booking read (`GET /api/v1/bookings/:bookingId`):
+  - Enforces resource-level authorization: permitted for the owning patient, assigned doctor, or admin (`403 FORBIDDEN` for other actors).
+  - Returns safe consultation details with doctor and slot information.
+- Appointment cancellation (`POST /api/v1/bookings/:bookingId/cancel`):
+  - Enforces ownership/actor authorization: patient owner, assigned doctor, or admin.
+  - Row-level lock on consultation (`FOR UPDATE OF c`) inside a transaction.
+  - Validates lifecycle state transitions: rejects already cancelled appointments (`409 BOOKING_ALREADY_CANCELLED`) and completed or in-progress appointments (`409 INVALID_STATE_TRANSITION`).
+  - Updates consultation status to `'cancelled'`.
+  - Slot release policy: if the slot start time is still in the future (`starts_at > NOW()`), releases slot status back to `'available'`; if elapsed, marks `'unavailable'`.
+  - Records append-only audit log entry (`BOOKING_CANCELLED`) capturing actor, reason, and cancellation metadata.
+- Database & Migrations:
+  - Created additive migration `src/db/migrations/004_booking_and_cancellations.sql`:
+    - Replaces strict `UNIQUE (slot_id)` constraint with partial unique index `consultations_active_slot_uidx` on `(slot_id) WHERE status != 'cancelled'` so cancelled slots can be safely re-released and rebooked.
+    - Adds query performance indexes `idx_consultations_patient_status` and `idx_consultations_status`.
+  - Upgraded `src/db/migrate.js` to automatically baseline `004_booking_and_cancellations.sql` if manually applied via pgAdmin.
+  - Migration 004 has **NOT** been run automatically; exact manual instructions provided for user review and execution.
+- Route Mounting:
+  - Mounted `bookingsRouter` at `/api/v1/bookings` in `src/app.js`.
+
+**Verification:**
+- Vitest suite run: `npm test` executed across all suites.
+- Results: 5 test files passed, 95 tests passed (0 failures).
+  - `tests/health.test.js`: 2 passed.
+  - `tests/auth.test.js`: 25 passed.
+  - `tests/doctors.test.js`: 21 passed.
+  - `tests/slots.test.js`: 15 passed.
+  - `tests/bookings.test.js`: 32 passed (booking creation, authorization, concurrency row locks, 23505 race catches, idempotency replays and conflicts, listing with pagination, reading with resource ownership checks, cancellation lifecycle transitions, slot release, and database failure rollbacks).
+
+## Next Phase — Phase 5: Authentication Part 2 (Security Hardening)
+
+MFA, account recovery, advanced authorization boundaries, and security review.
 
 ## Working Rule
 
 **Record what actually changed, why it changed, and how it was verified. Keep planned work separate from completed work. Never record a requirement as implemented until code or test evidence confirms it.**
+
+
+## Phase 4 hardening and completion — 2026-10-22
+
+**Reason:** Review found that mocked SQL tests did not establish PostgreSQL concurrency correctness. Concurrent identical booking requests could return a slot conflict; unique-key recovery queried an aborted transaction; availability updates did not share the creation lock.
+
+**Changes:**
+- `src/routes/bookings.js`: serialize each patient/idempotency-key pair with a transaction advisory lock before checking persisted requests. Roll back unique violations before recovery reads, match known constraints precisely, and return the complete original creation representation on replay, including after cancellation. Normalize UUID casing, bound keys to 200 characters, validate cancellation bodies and date ranges, enforce cancellation roles, and preserve microsecond cursor precision.
+- `src/routes/doctors.js`: acquire the doctor-profile lock before slot updates, reject elapsed slots being made available, and block timing edits to consultation-referenced slots so cancelled appointment history is preserved.
+- `src/db/migrate.js`: baseline migration 004 only when all three indexes exist and the old strict slot constraint is absent.
+- `tests/bookings.test.js`, `tests/slots.test.js`: add conflict-recovery and validation regression coverage and adapt transaction mocks.
+- `tests/integration/phase4.test.js`, `scripts/test-integration.js`, both Vitest configuration files, and package scripts: add repeatable tests against a uniquely created disposable PostgreSQL database; unit tests now supply independent test configuration.
+- README, API contract, architecture, roadmap, and Phase 4 plan: reconcile actual behavior, setup, verification, and remaining scope.
+
+**Verification:**
+- `npm test`: 100 tests passed across five suites (health 2, auth 25, doctors 21, slots 15, bookings 37).
+- `npm run test:integration`: 12 tests passed against real PostgreSQL. Tested fresh/repeated migrations and partial-004 reconciliation, competing patients for one slot, concurrent same-key requests, conflicting key payloads, patient key scoping, concurrent cancellation, rebooking, original replay after cancellation, authorization, booking/cancellation audit-failure rollback, immutable historical times, microsecond pagination, and concurrent slot creation/update overlap protection.
+- Integration fixtures were created only in disposable databases and removed afterward. No credentials were printed.
+- Read-only development schema check confirmed 004 was missing. Applied only pending migration 004 through the migration runner. Verified all expected indexes, removal of `consultations_slot_id_key`, and unchanged user/slot/consultation/audit row counts.
+
+**Remaining boundaries:** Phase 5 MFA/authentication hardening, later clinical/payment/admin modules, production operations, and dependency remediation remain outside this change. No performance or availability targets were measured. Existing source organization is retained; no broad refactor or Git commit was performed.

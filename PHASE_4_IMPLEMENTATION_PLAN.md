@@ -1,95 +1,36 @@
-# Phase 4 Implementation Plan
+# Phase 4 — Appointment Booking
 
-**Project:** Amrutam Telemedicine Backend  
-**Status:** Draft — validate against the repository PRD, API contract, roadmap, and existing Phase 4 plan before implementation.  
-**Priority:** Submission-focused; implement only requirements supported by project documentation.
+**Status:** Complete for documented Phase 4 scope, verified 2026-10-22.
 
-## 1. Objective
+## Delivered scope
 
-Implement the next documented phase without destabilizing completed Phase 3 work. Keep Phase 4 changes isolated, tested, and documented so Phase 3 can be committed as a clean checkpoint first.
+- Patient booking creation, own-booking listing, authorized detail reads, and scheduled-booking cancellation.
+- Transactional slot reservation, consultation creation, and audit insertion.
+- Patient-scoped idempotency with concurrent first-request serialization, conflict detection, and stable creation replay after cancellation.
+- Active-slot uniqueness with retained cancelled consultation history.
+- Shared doctor locking for availability creation/updates, and protection against editing historical appointment times.
+- Bounded key validation, cancellation-body validation, date-range validation, and pagination preserving PostgreSQL timestamp precision.
 
-## 2. Pre-implementation checks
+## Verification
 
-- Read the PRD, API contract, architecture, roadmap, and any existing Phase 4 plan.
-- Inspect the current schema, migrations, routes, middleware, and test conventions.
-- Confirm the exact Phase 4 scope and dependencies on Phase 3.
-- Preserve existing user changes and database data.
-- Prefer committing Phase 3 as a clean checkpoint before Phase 4 implementation.
+- `npm test`: 100 tests passed across five regression suites (37 booking tests).
+- `npm run test:integration`: 12 real PostgreSQL tests passed in a newly created disposable database, removed after the run.
+- Real database scenarios cover concurrent competing patients, concurrent identical requests, conflicting payloads with the same key, patient key scope, concurrent cancellation, rebooking, replay after cancellation, resource permissions, audit-failure rollbacks, historical slot protection, microsecond pagination, and concurrent slot create/update overlap prevention.
+- Applied migrations 001–004 to the disposable database; verified a second migration run is a no-op and partial migration 004 is repaired rather than incorrectly baselined.
+- Applied migration 004 to the existing local development database after verification. Confirmed all three new indexes, removal of the old strict slot-uniqueness index, and unchanged user, slot, consultation, and audit row counts.
 
-## 3. Candidate workstream: appointments/bookings
+## Completion checklist
 
-> Provisional only: validate against the repository's actual Phase 4 requirements. Remove or revise anything not in scope.
+- [x] Required Phase 4 endpoints implemented.
+- [x] Migration 004 applied and verified locally.
+- [x] Authorization, validation, conflicts, retries, and rollback behavior covered.
+- [x] Real PostgreSQL concurrency tests pass.
+- [x] Existing regression tests pass.
+- [x] README, API contract, architecture, roadmap, and change log updated.
+- [x] Existing development records preserved.
 
-### 3.1 API and data model
-- Define the booking lifecycle and permitted state transitions from the specification.
-- Define request/response schemas and consistent error responses.
-- Add a migration only if required; never reset or drop existing data.
+## Boundaries
 
-### 3.2 Authorization and validation
-- Require authentication for protected operations.
-- Enforce role-based access and resource ownership.
-- Validate identifiers, request bodies, and booking eligibility.
-- Ensure only eligible, approved doctors and bookable slots can be selected if required by the specification.
+The current code uses route modules with direct SQL. No broad service-layer refactor, payment integration, MFA, consultation progression, production deployment, or dependency upgrades were included. Performance and availability targets remain unmeasured. Changes are left for review in the working tree; no commit was created.
 
-### 3.3 Transaction and concurrency safety
-- Prevent two requests from successfully claiming the same slot.
-- Use PostgreSQL transactions and appropriate row locking and/or database constraints.
-- Roll back failed operations cleanly and return a documented conflict response.
-
-### 3.4 Lifecycle endpoints
-- Implement only endpoints required by the existing API contract (for example, create, list/view, or cancel a booking if specified).
-- Enforce allowed transitions and prevent invalid or repeated transitions.
-
-## 4. Automated tests
-
-Add tests following existing project conventions for in-scope behavior:
-
-- Successful primary flow.
-- Missing or invalid fields and malformed identifiers.
-- Unauthenticated and unauthorized requests.
-- Nonexistent resources and ownership violations.
-- Already-booked/unavailable slots and conflicting requests.
-- Concurrent booking attempts, where applicable.
-- Valid and invalid lifecycle transitions, where applicable.
-- Regression coverage for existing authentication, doctor, and slot endpoints.
-
-Run relevant tests and the full test suite when practical. Report actual results; do not claim unrun tests passed.
-
-## 5. Documentation
-
-Update existing project documents rather than creating duplicates:
-
-- Change log: Phase 4 changes, migrations, endpoints, and test results.
-- API contract: methods, paths, authentication, request/response examples, and errors.
-- Roadmap/phase plan: accurate status and remaining work.
-- Architecture/schema notes: only where implementation changes them.
-- README: setup or test instructions only if they change.
-
-## 6. Safety and scope controls
-
-- Do not drop, reset, or destructively modify the database.
-- Review migrations before applying them to any environment.
-- Do not introduce an admin dashboard or approval endpoint unless explicitly required.
-- Avoid unrelated refactoring and dependency changes.
-- Preserve Phase 3 behavior.
-- Do not mark work complete until implementation and automated tests support that status.
-
-## 7. Definition of done
-
-- [ ] Implementation matches documented Phase 4 scope.
-- [ ] Required migrations are reviewed and safely applied only in the intended environment.
-- [ ] Authentication, authorization, validation, and conflict handling are covered.
-- [ ] Relevant automated tests pass.
-- [ ] Full test-suite result is recorded.
-- [ ] Existing documentation is updated consistently.
-- [ ] Changed files and known limitations are summarized.
-- [ ] Phase 3 and Phase 4 changes remain clearly separable in Git history where practical.
-
-## 8. Final report required from the implementation agent
-
-1. Features implemented.
-2. Files changed and why.
-3. Migrations added and their effects.
-4. Tests run and exact results.
-5. Remaining issues or assumptions.
-6. Safe next steps for review and submission.
+Next: Phase 5 security hardening, starting with explicit MFA/enrollment/recovery policy and authentication abuse controls.

@@ -1,10 +1,12 @@
 # Amrutam Telemedicine Backend — API Contract
 
 **Document type:** API contract and endpoint reference  
-**Status:** Phase 2 authentication endpoints and Phase 3 doctor profiles, discovery search, and availability endpoints are implemented and tested; other endpoints remain planned unless explicitly verified in the repository  
+**Status:** Phase 2 authentication endpoints, Phase 3 doctor profiles/discovery/availability endpoints, and Phase 4 appointment booking and cancellation endpoints are implemented and tested; other endpoints remain planned unless explicitly verified in the repository
 **Base path:** `/api/v1`  
 **Protocol:** HTTPS in deployed environments; JSON request/response bodies  
 **Architecture:** Node.js, Express, PostgreSQL, modular monolith
+
+**Phase 4 verification (2026-10-22):** 100 regression tests and 12 real PostgreSQL integration tests pass. Migration 004 is applied to the local development database. Integration fixtures use a separate disposable database.
 
 ## 1. Purpose and authority
 
@@ -141,7 +143,7 @@ Malformed JSON and invalid authentication request fields return `400 VALIDATION_
 
 ## 3. Endpoint inventory
 
-Authentication and doctor/availability paths in this section are implemented and verified. Other paths remain proposed targets, not a claim that the routes already exist. The readiness path is `/api/v1/health/ready`; `/api/v1/ready` is not registered.
+Authentication, doctor profiles/availability, and booking/cancellation paths in this section are implemented and verified. Other paths remain proposed targets, not a claim that the routes already exist. The readiness path is `/api/v1/health/ready`; `/api/v1/ready` is not registered.
 
 | Method | Path | Access | Purpose | Roadmap phase |
 |---|---|---|---|---|
@@ -157,10 +159,10 @@ Authentication and doctor/availability paths in this section are implemented and
 | `POST` | `/doctors/me/slots` | Authenticated Doctor | Create availability slots | 3 — implemented |
 | `PATCH` | `/doctors/me/slots/:slotId` | Authenticated Doctor | Update an eligible own slot | 3 — implemented |
 | `DELETE` | `/doctors/me/slots/:slotId` | Authenticated Doctor | Remove an eligible own unbooked slot | 3 — implemented |
-| `POST` | `/bookings` | Patient | Book a slot; idempotent and concurrency-safe | 4 |
-| `GET` | `/bookings/me` | Patient | List own bookings | 4 |
-| `GET` | `/bookings/:bookingId` | Patient/assigned doctor/admin per policy | Read booking with resource checks | 4 |
-| `POST` | `/bookings/:bookingId/cancel` | Owner/authorized actor | Cancel if lifecycle rules allow | 4 |
+| `POST` | `/bookings` | Patient | Book a slot; idempotent and concurrency-safe | 4 — implemented |
+| `GET` | `/bookings/me` | Patient | List own bookings | 4 — implemented |
+| `GET` | `/bookings/:bookingId` | Patient/assigned doctor/admin per policy | Read booking with resource checks | 4 — implemented |
+| `POST` | `/bookings/:bookingId/cancel` | Owner/authorized actor | Cancel if lifecycle rules allow | 4 — implemented |
 | `PATCH` | `/consultations/:consultationId/status` | Assigned doctor/authorized actor | Perform permitted status transition | 6 |
 | `GET` | `/consultations/:consultationId` | Patient/assigned doctor/admin per policy | Read consultation | 6 |
 | `GET` | `/consultations/me` | Authenticated patient or doctor | List caller's permitted consultations | 6 |
@@ -276,7 +278,7 @@ Rules:
 
 **Success:** `200 OK`, returning `id`, normalized `email`, `role`, and `isActive`.
 
-The middleware accepts only `Authorization: Bearer <token>`, verifies HS256 signature and expiry, requires valid identity claims, and checks that the referenced account remains active and has the token's current role. Missing, malformed, invalid, expired, inactive, or stale-role tokens return `401 UNAUTHENTICATED`. The reusable `requireRole(...roles)` middleware returns `403 FORBIDDEN` for authenticated users without an allowed role; no role-restricted business endpoint exists yet.
+The middleware accepts only `Authorization: Bearer <token>`, verifies HS256 signature and expiry, requires valid identity claims, and checks that the referenced account remains active and has the token's current role. Missing, malformed, invalid, expired, inactive, or stale-role tokens return `401 UNAUTHENTICATED`. The reusable `requireRole(...roles)` middleware returns `403 FORBIDDEN` for authenticated users without an allowed role; doctor and booking routes enforce role and resource permissions.
 
 **Errors:** `401 UNAUTHENTICATED`; unexpected database failures return a generic `500 INTERNAL_SERVER_ERROR` without database details.
 
@@ -490,6 +492,8 @@ The middleware accepts only `Authorization: Bearer <token>`, verifies HS256 sign
 **Rules:**
 - Doctor identity derived from token. If `slot.doctor_id !== req.auth.userId`, returns `403 FORBIDDEN`.
 - Booked slots (`status = 'booked'`) cannot be modified; returns `409 SLOT_ALREADY_BOOKED`.
+- Slot updates acquire the same doctor-profile lock as slot creation before locking the slot, serializing overlap checks across both operations.
+- Timings of slots referenced by any consultation, including cancelled consultations, cannot be edited (`409 SLOT_REFERENCED`). Create a new slot for different times. Status changes remain allowed for unbooked slots.
 - If timing is updated, checks `endsAt > startsAt`, `startsAt > NOW()`, and validates non-overlap against other active slots.
 - Status may be toggled between `'available'` and `'unavailable'`. Cannot be set to `'booked'` by doctor.
 
@@ -524,61 +528,190 @@ The middleware accepts only `Authorization: Bearer <token>`, verifies HS256 sign
 
 **Errors:** `400 INVALID_ID`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 SLOT_NOT_FOUND`, `409 SLOT_ALREADY_BOOKED`, `409 SLOT_REFERENCED`.
 
-## 6. Phase 4 — Booking contract
+## 6. Phase 4 — Booking contract (Implemented & Verified)
 
 ### 6.1 `POST /bookings`
 
-**Purpose:** Book an available slot.
+**Purpose:** Book an available doctor slot. Enforces concurrency protection and idempotency.
 
-**Access:** Patient.
+**Access:** Authenticated user with role `patient`.
 
 **Headers:**
-
 ```http
 Authorization: Bearer <access-token>
-Idempotency-Key: <unique-value>
+Idempotency-Key: <unique-value> (optional)
 Content-Type: application/json
 ```
 
-**Proposed request:**
-
+**Request:**
 ```json
 {
-  "slotId": "slot-id"
+  "slotId": "slot-uuid"
 }
 ```
 
-The server derives the patient identity from the token. A client-supplied `patientId` must not be trusted.
+**Rules:**
+- Caller must have role `patient`; doctors and admins receive `403 FORBIDDEN`.
+- Patient identity is strictly derived from verified JWT `sub` (`req.auth.userId`). Client-supplied `patientId` is rejected with `400 VALIDATION_ERROR`.
+- `slotId` must be a valid UUID. Extra body fields are rejected (`.strict()`).
+- If `Idempotency-Key` header is provided:
+  - Must contain 1–200 characters after trimming; empty or oversized keys return `400 VALIDATION_ERROR`.
+  - Keys are scoped to the authenticated patient and retained for the lifetime of the consultation; no expiry or key-reuse window is implemented.
+  - A transaction-scoped PostgreSQL advisory lock serializes identical patient/key requests even before a consultation exists. The key is rechecked after acquiring the lock.
+  - UUID inputs are normalized to lowercase before comparing replay payloads.
+  - Replay returns the original creation representation (`status: scheduled`, original timestamps), even after cancellation. Use `GET /bookings/:bookingId` for current state. Immutable creation fields permit reconstructing this response without storing sensitive request payloads.
+  - Replays existing `201 Created` outcome if same `(patientId, idempotencyKey)` matches requested `slotId`.
+  - Returns `409 IDEMPOTENCY_KEY_REUSED` if the same key was previously used with a different request payload.
+- Concurrency and double-booking protection:
+  - Executes inside a PostgreSQL transaction (`BEGIN ... COMMIT`).
+  - Acquires row-level lock on availability slot (`SELECT ... FOR UPDATE`).
+  - Verifies slot exists (`404 SLOT_NOT_FOUND` if missing).
+  - Verifies slot `status = 'available'` (`409 SLOT_UNAVAILABLE` if already booked or unavailable).
+  - Verifies slot is in the future: `starts_at > NOW()` (`400 VALIDATION_ERROR` if started or elapsed).
+  - Verifies assigned doctor is approved and active (`404 DOCTOR_NOT_FOUND` if doctor unapproved or inactive).
+  - Ensures patient profile exists (`INSERT INTO patient_profiles (user_id, full_name) VALUES ($1, 'Patient') ON CONFLICT DO NOTHING`).
+  - Atomically marks slot `status = 'booked'`.
+  - Inserts consultation with `idempotency_key`; on a known PostgreSQL `23505` conflict, rolls back before querying any stored result. Unexpected constraints remain generic server errors.
+  - Inserts append-only audit log entry (`BOOKING_CREATED`).
 
-**Success:** `201 Created`; a repeat with the same idempotency key and request replays the original outcome.
+**Success:** `201 Created`.
 
-**Potential errors:**
-- `400 VALIDATION_ERROR`
-- `401 UNAUTHENTICATED`
-- `403 FORBIDDEN`
-- `404 SLOT_NOT_FOUND`
-- `409 SLOT_UNAVAILABLE` or `IDEMPOTENCY_KEY_REUSED`
-- `429 RATE_LIMITED`
-- `503 SERVICE_UNAVAILABLE`
+```json
+{
+  "data": {
+    "id": "consultation-uuid",
+    "slotId": "slot-uuid",
+    "patientId": "patient-uuid",
+    "doctorId": "doctor-uuid",
+    "status": "scheduled",
+    "idempotencyKey": "unique-key-or-null",
+    "createdAt": "2026-10-22T10:00:00.000Z",
+    "updatedAt": "2026-10-22T10:00:00.000Z"
+  }
+}
+```
 
-**Required behavior:**
-- Reserve the slot and create the booking/consultation atomically.
-- Prevent two requests from booking the same slot.
-- Persist/check idempotency state.
-- Record an audit event for the booking.
-- Trigger notifications only after the transaction commits, preferably through an outbox/worker if configured.
+**Errors:** `400 VALIDATION_ERROR`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 SLOT_NOT_FOUND`, `404 DOCTOR_NOT_FOUND`, `409 SLOT_UNAVAILABLE`, `409 IDEMPOTENCY_KEY_REUSED`.
 
 ### 6.2 `GET /bookings/me`
 
-Returns only the authenticated patient's bookings, with pagination and optional validated status/date filters.
+**Purpose:** List authenticated patient's own bookings with cursor pagination and optional filters.
+
+**Access:** Authenticated user with role `patient`.
+
+**Query parameters:**
+- `status` (optional enum: `scheduled`, `in_progress`, `completed`, `cancelled`).
+- `from` (optional ISO 8601 string): filter slots starting at or after timestamp.
+- `to` (optional ISO 8601 string): filter slots ending at or before timestamp.
+- `limit` (integer, optional, default: 10, min: 1, max: 50).
+- `cursor` (string, optional): base64-encoded token `{ "createdAt": "...", "id": "..." }`.
+
+`from` must precede `to` when both are supplied. Cursor timestamps preserve PostgreSQL microsecond precision; clients must treat cursors as opaque. Returned `createdAt`/`updatedAt` use normal JSON timestamp serialization.
+
+**Success:** `200 OK`.
+
+```json
+{
+  "data": [
+    {
+      "id": "consultation-uuid",
+      "slotId": "slot-uuid",
+      "patientId": "patient-uuid",
+      "doctorId": "doctor-uuid",
+      "doctorName": "Dr. Aisha Sharma",
+      "doctorSpecialty": "Ayurveda",
+      "startsAt": "2026-10-25T09:00:00.000Z",
+      "endsAt": "2026-10-25T09:30:00.000Z",
+      "status": "scheduled",
+      "createdAt": "2026-10-22T10:00:00.000Z",
+      "updatedAt": "2026-10-22T10:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "limit": 10,
+    "nextCursor": null
+  }
+}
+```
+
+**Errors:** `400 VALIDATION_ERROR`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`.
 
 ### 6.3 `GET /bookings/:bookingId`
 
-Returns a booking only after checking that the caller is the patient owner, assigned doctor, or a permitted admin.
+**Purpose:** Read booking details with resource-level access control.
+
+**Access:** Authenticated user (patient owner, assigned doctor, or admin).
+
+**Path parameter:** `bookingId` (UUID).
+
+**Rules:**
+- Returns booking only if caller is the patient owner (`req.auth.userId === booking.patient_id`), assigned doctor (`req.auth.userId === booking.doctor_id`), or an administrator (`role === 'admin'`).
+- Other users receive `403 FORBIDDEN`.
+- Nonexistent booking yields `404 BOOKING_NOT_FOUND`.
+
+**Success:** `200 OK`.
+
+```json
+{
+  "data": {
+    "id": "consultation-uuid",
+    "slotId": "slot-uuid",
+    "patientId": "patient-uuid",
+    "doctorId": "doctor-uuid",
+    "doctorName": "Dr. Aisha Sharma",
+    "doctorSpecialty": "Ayurveda",
+    "startsAt": "2026-10-25T09:00:00.000Z",
+    "endsAt": "2026-10-25T09:30:00.000Z",
+    "status": "scheduled",
+    "createdAt": "2026-10-22T10:00:00.000Z",
+    "updatedAt": "2026-10-22T10:00:00.000Z"
+  }
+}
+```
+
+**Errors:** `400 INVALID_ID`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 BOOKING_NOT_FOUND`.
 
 ### 6.4 `POST /bookings/:bookingId/cancel`
 
-Cancels a booking only if the current state and cancellation policy permit it. Define whether cancellation releases the slot, what happens to payments, and which audit events are required. Use a transaction and idempotent behavior where appropriate.
+**Purpose:** Cancel an existing appointment and release the slot if eligible.
+
+**Access:** Authenticated user (patient owner, assigned doctor, or admin).
+
+**Path parameter:** `bookingId` (UUID).
+
+**Request body:** Optional `{ "reason": "Patient feeling better" }` (max 500 chars).
+
+When provided, the body must be an object with no unknown fields. A supplied reason must contain 1–500 characters after trimming; arrays and null bodies are rejected.
+
+**Rules:**
+- Requires caller to be the booking's patient owner, assigned doctor, or admin; unauthorized users receive `403 FORBIDDEN`.
+- Atomic transaction with row locking (`SELECT ... FOR UPDATE OF c`).
+- State machine validations:
+  - If status is `cancelled`, returns `409 BOOKING_ALREADY_CANCELLED`.
+  - If status is `completed` or `in_progress`, returns `409 INVALID_STATE_TRANSITION`.
+- Transitions consultation status to `'cancelled'`.
+- Slot release policy:
+  - If the slot is in the future (`starts_at > NOW()`), releases slot status back to `'available'`.
+  - If the slot is in the past (`starts_at <= NOW()`), sets slot status to `'unavailable'`.
+- Records append-only audit log entry (`BOOKING_CANCELLED`) with cancellation metadata.
+
+**Success:** `200 OK`.
+
+```json
+{
+  "data": {
+    "id": "consultation-uuid",
+    "slotId": "slot-uuid",
+    "patientId": "patient-uuid",
+    "doctorId": "doctor-uuid",
+    "status": "cancelled",
+    "createdAt": "2026-10-22T10:00:00.000Z",
+    "updatedAt": "2026-10-22T11:00:00.000Z"
+  }
+}
+```
+
+**Errors:** `400 INVALID_ID`, `400 VALIDATION_ERROR`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 BOOKING_NOT_FOUND`, `409 BOOKING_ALREADY_CANCELLED`, `409 INVALID_STATE_TRANSITION`.
 
 ## 7. Phase 6 — Consultation and prescription contract
 
@@ -710,23 +843,18 @@ A contract entry is considered **implemented** only when the route exists, its b
 ## 13. Current verified state
 
 As of the latest development log:
-- Express server starts.
-- PostgreSQL 16 database `amrutam` is configured.
-- Initial migration was executed.
-- Health endpoint returned `{"status":"ok","service":"amrutam-backend"}`.
-- The actual readiness endpoint returned `{"status":"ready","database":"connected"}` after fixing `.env` connection settings.
-- Phase 2 migration `002_normalized_user_email.sql` was applied and its unique index verified in the configured non-production database.
-- Authentication tests exercise database calls through mocks; they do not perform user writes against the configured database.
-- Registration, login, and `/auth/me` are implemented; basic role middleware is tested directly because no role-restricted business endpoint exists yet.
-- MFA, account lockout, password reset, email verification, refresh tokens, doctor search, availability, booking, consultation, prescription, payment, and admin endpoints have not been implemented in Phase 2.
-- The npm audit reported 6 vulnerabilities; remediation remains open.
+- Automated verification: 100 regression tests across five suites plus 12 PostgreSQL integration tests pass.
+- The local development database has migrations 001–004 applied; migration 004 was verified without changing user, slot, consultation, or audit row counts.
+- Phase 2 authentication (registration, login, JWT issuance, auth & role middleware, `/auth/me`) is implemented and verified.
+- Phase 3 doctor discovery (`GET /doctors`), doctor profiles (`GET /doctors/:doctorId`, `PATCH /doctors/me`), and availability slots management (`POST /doctors/me/slots`, `PATCH /doctors/me/slots/:slotId`, `DELETE /doctors/me/slots/:slotId`, `GET /doctors/:doctorId/slots`) are implemented and verified.
+- Phase 4 appointment booking and cancellation are implemented and verified:
+  - `POST /api/v1/bookings`: transactional booking with doctor approval verification, slot row-level locking (`SELECT ... FOR UPDATE`), double-booking prevention, audit logging, and idempotency key handling (with replay and conflict detection).
+  - `GET /api/v1/bookings/me`: authenticated patient listing own bookings with cursor pagination and status/date filtering.
+  - `GET /api/v1/bookings/:bookingId`: single booking read with resource-level authorization (patient owner, assigned doctor, admin).
+  - `POST /api/v1/bookings/:bookingId/cancel`: cancellation with ownership checks, state machine transition validation, slot release back to `'available'` for future slots, and audit logging.
+  - Migration `004_booking_and_cancellations.sql` applied and verified locally. Fresh migration, repeat-run, and partial-baseline behavior are tested in disposable PostgreSQL databases.
+- Consultations status transitions, prescriptions, payments, admin analytics, and MFA remain planned for subsequent phases.
 
 ## 14. Next implementation task
 
-Implement **Phase 2 — Authentication Part 1: Core Identity**:
-1. Inspect current routes, schema, dependencies, and tests.
-2. Confirm or migrate the user schema without silently rewriting an applied migration.
-3. Implement patient/doctor registration, password hashing, login, JWT verification, and basic RBAC.
-4. Prevent admin self-registration.
-5. Add tests for success cases, invalid credentials, invalid/missing tokens, role restrictions, and attempted admin self-registration.
-6. Update this contract, `ARCHITECTURE.md`, and `Amrutam_Backend_Development_Change_Log.md` based on actual implementation and test results.
+Implement **Phase 5 — Authentication Part 2: Security Hardening** (MFA, sensitive-resource authorization, and audit review).

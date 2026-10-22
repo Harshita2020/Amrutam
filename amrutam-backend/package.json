@@ -8,6 +8,8 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "test": "vitest run",
+    "test:integration": "node scripts/test-integration.js",
+    "migrate": "node src/db/migrate.js",
     "test:watch": "vitest"
   },
   "dependencies": {

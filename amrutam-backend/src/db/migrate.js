@@ -85,6 +85,24 @@ async function ensureMigrationsTableAndBaseline(client) {
     }
   }
 
+  // 4. Require every index and removal of the old constraint before baselining 004.
+  if (!applied.has('004_booking_and_cancellations.sql')) {
+    const res = await client.query(`
+      SELECT 1 WHERE
+        (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'
+         AND indexname IN ('consultations_active_slot_uidx', 'idx_consultations_patient_status', 'idx_consultations_status')) = 3
+        AND NOT EXISTS (SELECT 1 FROM pg_constraint
+          WHERE conrelid = to_regclass('public.consultations') AND conname = 'consultations_slot_id_key')
+    `);
+    if (res.rowCount > 0) {
+      await client.query(
+        'INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING',
+        ['004_booking_and_cancellations.sql']
+      );
+      applied.add('004_booking_and_cancellations.sql');
+    }
+  }
+
   return applied;
 }
 

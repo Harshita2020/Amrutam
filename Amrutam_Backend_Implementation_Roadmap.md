@@ -52,12 +52,18 @@
 
 ## Phase 4 — Appointment Booking
 
-- Book and cancel appointments.
-- Prevent double booking with database constraints and transactions.
-- Implement idempotency for booking writes.
-- Test concurrent requests and failure scenarios.
+**Status: Complete — hardened and verified 2026-10-22**
 
-**Exit criteria:** A slot cannot be booked twice, retries do not create duplicate bookings, and booking tests pass.
+- Book and cancel appointments (`POST /api/v1/bookings`, `GET /api/v1/bookings/me`, `GET /api/v1/bookings/:bookingId`, `POST /api/v1/bookings/:bookingId/cancel`).
+- Prevent double booking with PostgreSQL transactions, row-level locking (`SELECT ... FOR UPDATE`), and database constraints (`consultations_slot_id_key` / partial unique index).
+- Implement idempotency for booking writes: replay identical requests with stored outcomes (`201 Created`), and reject key reuse with differing payloads (`409 IDEMPOTENCY_KEY_REUSED`).
+- Enforce doctor approval check and patient profile existence before booking.
+- Cancellation state transitions: allow cancellation of `scheduled` appointments; reject `cancelled`, `completed`, or `in_progress` appointments with conflict errors; release future slots back to `available`.
+- Migration `004_booking_and_cancellations.sql` applied and verified in the local development database, preserving existing row counts.
+- 100 regression tests and 12 real PostgreSQL integration tests pass. Disposable test databases cover real concurrent requests, idempotency replays/conflicts, ownership, audit-failure rollback, cancellation/rebooking, slot overlap races, history preservation, and precise pagination.
+- Shared doctor locks serialize slot creation/updates; patient/key advisory locks serialize first booking attempts and retries. Unique-error recovery rolls back before reading. Idempotency creation responses remain stable after cancellation.
+
+**Exit criteria:** A slot cannot have two active bookings, identical keyed retries replay without duplicates, and booking tests pass against real PostgreSQL. Satisfied for Phase 4; production performance remains unmeasured.
 
 ## Phase 5 — Authentication Part 2: Security Hardening
 

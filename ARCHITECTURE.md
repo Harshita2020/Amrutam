@@ -3,7 +3,7 @@
 **Document type:** Main architecture reference  
 **Status:** Target architecture / implementation guide  
 **Stack:** Node.js, Express, PostgreSQL, REST API  
-**Current implementation status:** Phase 1 foundation, Phase 2 core identity, and Phase 3 doctor discovery, profiles, and availability slots are implemented and verified (63 automated tests passing). Remaining domain modules in this document remain planned and must not be treated as implemented until code and tests confirm them.
+**Current implementation status:** Phases 1–4 are implemented and verified: 100 regression tests and 12 real PostgreSQL integration tests pass. Migration 004 is applied locally. Remaining domain modules in this document remain planned and must not be treated as implemented until code and tests confirm them.
 
 ## 1. Purpose and source requirements
 
@@ -116,6 +116,8 @@ docs/
 
 Each module should expose a small interface and receive dependencies through explicit imports or constructor/function injection. Avoid circular dependencies and direct database access from controllers.
 
+The directory tree above is a target. Current implementation uses `src/routes/{auth,doctors,bookings}.js` with direct SQL and transaction logic; a service/repository separation has not been implemented.
+
 ## 5. Domain modules and ownership
 
 | Module | Main responsibilities | Key access rule |
@@ -220,8 +222,8 @@ erDiagram
 - **Doctor Discoverability Index:** Migration 003 added `idx_doctor_profiles_discoverable` on `(verification_status, specialization)` to optimize public doctor search queries filtered by status and specialty.
 - **Availability Slots (`availability_slots`):** Columns: `id` (UUID PK), `doctor_id` (UUID FK to `doctor_profiles.user_id`), `starts_at` (timestamptz), `ends_at` (timestamptz), `status` (text check `'available', 'booked', 'unavailable'`), `created_at` (timestamptz), and Migration 003 `updated_at` (timestamptz). Constraints: `ends_at > starts_at`, unique `(doctor_id, starts_at)`.
 - **Slot Query & Concurrency Indexes:** Existing index `idx_slots_doctor_start` plus Migration 003 index `idx_slots_doctor_status_start` on `(doctor_id, status, starts_at)`. Application concurrency control acquires row-level locks on the doctor profile (`SELECT user_id FROM doctor_profiles WHERE user_id = $1 FOR UPDATE`) within transactions to serialize concurrent slot creations and prevent interval overlap races.
-- **Normalized Email Index:** Migration 002 added unique index `users_email_normalized_uidx` on `lower(btrim(email))`.
-- **Audit Logs & Consultations:** Retained from `001_initial_schema.sql` for Phase 4 booking and Phase 6 consultations. Slot deletion safeguards strictly verify that slots referenced in `consultations` or marked `'booked'` cannot be deleted.
+- **Audit Logs & Consultations:** Established in `001_initial_schema.sql` and utilized in Phase 4 for appointment booking (`consultations`) and security auditing (`audit_logs`). Additive migration `004_booking_and_cancellations.sql` replaces the strict `UNIQUE (slot_id)` constraint with partial unique index `consultations_active_slot_uidx` on `(slot_id) WHERE status != 'cancelled'`, allowing cancelled slots to be released and rebooked safely, and adds query performance indexes (`idx_consultations_patient_status`, `idx_consultations_status`).
+- **Booking Concurrency & Idempotency:** Implemented via PostgreSQL transactions, doctor row locking for slot creation, slot row locking (`SELECT ... FOR UPDATE`) during booking and cancellation, and consultation unique index constraints (`(patient_id, idempotency_key)` and slot uniqueness) guaranteeing database-level protection against race conditions and duplicate bookings. Replay logic ensures identical idempotency key requests return stored outcomes without creating duplicates.
 
 ## 7. API design and contract conventions
 
@@ -311,7 +313,7 @@ The exact permission matrix must be enforced in code and tests, not only documen
 
 ### Phase 2 implementation status
 
-Patient and doctor accounts are created in `users`; passwords are bcryptjs hashes, and public registration cannot assign `admin`. `POST /auth/login` issues HS256 JWT access tokens with a 15-minute default expiry (`JWT_EXPIRES_IN`, maximum 24 hours). Authentication middleware checks the signature, expiry, account-active flag, and current database role. `GET /auth/me` returns only the safe identity fields. The reusable role middleware is tested directly; no business route is yet restricted by role. MFA, refresh/revocation tokens, dedicated login throttling, and account recovery remain out of scope.
+Patient and doctor accounts are created in `users`; passwords are bcryptjs hashes, and public registration cannot assign `admin`. `POST /auth/login` issues HS256 JWT access tokens with a 15-minute default expiry (`JWT_EXPIRES_IN`, maximum 24 hours). Authentication middleware checks the signature, expiry, account-active flag, and current database role. `GET /auth/me` returns only the safe identity fields. The reusable role middleware is tested directly and protects doctor and booking routes. MFA, refresh/revocation tokens, dedicated login throttling, and account recovery remain out of scope.
 
 ## 9. Booking flow, transactions, and concurrency
 
@@ -353,6 +355,10 @@ sequenceDiagram
 9. Avoid retrying non-idempotent operations blindly.
 
 ### Transaction versus saga
+
+**Phase 4 implementation details (2026-10-22):** Booking uses a transaction-scoped advisory lock over the patient/idempotency-key pair before checking for an existing consultation, followed by the slot row lock. This serializes first requests when no row exists yet. Replays do not lock consultation rows, avoiding an unnecessary lock dependency with cancellation. Known unique-conflict recovery rolls back before querying. Creation-response replay reconstructs immutable creation fields and preserves the original scheduled state/timestamps after cancellation. Keys persist with consultations; no expiry is implemented.
+
+Slot creation and timing/status updates acquire the same doctor-profile lock before slot mutation/overlap checks. Timings of consultation-referenced slots are immutable to preserve history. Booking pagination retains microsecond timestamps in opaque cursors. Integration tests run against a uniquely provisioned local PostgreSQL database and verify competing booking requests, simultaneous retries, rollback, cancellation/rebooking, and concurrent availability writes.
 
 - **Use a local PostgreSQL transaction** for booking, slot reservation, and related local records.
 - **Use an outbox/worker or saga-style orchestration** when a workflow crosses external systems, such as payment and notifications. External calls cannot be made atomic with a PostgreSQL transaction.
@@ -485,19 +491,18 @@ Target deployment:
 ## 18. Current state versus target state
 
 **Verified current state**
-- Node.js/Express starter runs.
-- PostgreSQL 16 database `amrutam` exists.
-- Initial migration has been executed.
+- Node.js/Express passes 100 regression tests across five suites and 12 real PostgreSQL integration tests.
+- Local development database has migrations 001–004 applied.
 - Health endpoint responds.
 - Readiness endpoint confirms database connectivity.
-- Baseline test suite passes 2 tests.
+- Registration, password hashing, login, JWT issuance, RBAC middleware, and `/auth/me` are verified.
+- Doctor profiles, public search with cursor pagination, and availability slots management are verified.
+- Phase 4 appointment booking, cancellation, idempotency, double-booking prevention, and audit logging are verified.
+- Migration `004_booking_and_cancellations.sql` is applied locally; existing user, slot, consultation, and audit row counts were preserved.
 
 **Not yet verified as implemented**
-- Registration/login, JWT, and RBAC.
-- Doctor profiles and availability APIs.
-- Booking, idempotency, and concurrency controls.
-- Consultations, prescriptions, payments, admin analytics, and audit coverage.
-- MFA.
+- Consultations lifecycle transitions, prescriptions, payments, admin analytics.
+- MFA (Phase 5).
 - OpenAPI, CI/CD, containers/IaC, production observability, load testing, and backup/restore validation.
 
 This document is the main design reference, not proof of implementation. Update it when architecture decisions change and record the reason in `Amrutam_Backend_Development_Change_Log.md`. Keep `API_CONTRACT.md` synchronized with the actual API and OpenAPI specification.
