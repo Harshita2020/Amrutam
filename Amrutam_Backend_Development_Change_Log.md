@@ -189,9 +189,51 @@ The connection settings in `.env` were corrected. The database password had been
 - `npm audit --json` reported 6 unresolved package findings (2 critical, 3 high, 1 moderate); no dependency upgrades were performed.
 - Initialized Git at the workspace root (`D:\Amrutam`). Verified `.env`, `node_modules`, and `coverage` are ignored. The local `.env` was not included in the untracked project contents; no staging or commit was performed.
 
-## Next Phase — Phase 3: Doctor Profiles, Availability, and Search
+## Next Phase — Phase 3: Doctor Profiles, Availability, and Search: COMPLETE (verified)
 
-Implement doctor profile management, availability, and search only after confirming the intended profile requirements and authorization boundaries.
+## Phase 3 — Doctor Profiles, Availability, and Search
+
+**Implemented:**
+- Public doctor discovery and search endpoint (`GET /api/v1/doctors`):
+  - Filters by `specialty` / `specialization` (case-insensitive exact match) and `q` (substring match across `full_name`, `specialization`, and `bio`).
+  - Strict allow-list of query parameters to reject SQL injection and unexpected filters.
+  - Bounded cursor-based pagination (default `limit: 10`, max `50`) using base64 tokens with deterministic ordering (`created_at DESC, user_id DESC`).
+  - Discoverability policy enforced: only active (`users.is_active = TRUE`) and approved (`doctor_profiles.verification_status = 'approved'`) doctor profiles are discoverable.
+- Public doctor profile endpoint (`GET /api/v1/doctors/:doctorId`):
+  - Validates UUID; returns safe public fields (`id`, `fullName`, `specialty`, `specialization`, `bio`, `createdAt`).
+  - Omits internal fields, password hashes, and user roles. Returns `404 DOCTOR_NOT_FOUND` if doctor does not exist, is inactive, or not approved.
+- Doctor profile update endpoint (`PATCH /api/v1/doctors/me`):
+  - Requires `doctor` role and extracts identity exclusively from verified JWT (`req.auth.userId`).
+  - Allows editing only `fullName`, `specialty`/`specialization`, and `bio`.
+  - Rejects unknown or privileged fields (`role`, `userId`, `verificationStatus`, `verification_status`, `is_active`, `password`) with `400 VALIDATION_ERROR`. Self-approval and privilege escalation are completely prevented.
+- Doctor availability slot management:
+  - Create slot (`POST /api/v1/doctors/me/slots`): validates ISO timestamps, enforces `endsAt > startsAt` and `startsAt > NOW()`. Uses transactional concurrency control with doctor row lock (`SELECT user_id FROM doctor_profiles WHERE user_id = $1 FOR UPDATE`) to eliminate race conditions and reject overlapping intervals (`409 SLOT_OVERLAP`).
+  - Update slot (`PATCH /api/v1/doctors/me/slots/:slotId`): verifies ownership (`403 FORBIDDEN` for other doctors), validates new interval, checks overlap, and blocks updates on booked slots (`409 SLOT_ALREADY_BOOKED`).
+  - Delete slot (`DELETE /api/v1/doctors/me/slots/:slotId`): verifies ownership, ensures slot is not booked (`409 SLOT_ALREADY_BOOKED`), and ensures slot is not referenced by consultations (`409 SLOT_REFERENCED`).
+  - Public slot listing (`GET /api/v1/doctors/:doctorId/slots`): lists available slots where `status = 'available'` and `starts_at >= NOW()`, excluding elapsed, booked, and unavailable slots. Supports optional `from` and `to` ISO date filters.
+- Database & Migrations:
+  - Created additive migration `src/db/migrations/003_doctor_profiles_and_slots.sql` with `ADD COLUMN IF NOT EXISTS verification_status`, `updated_at`, and query performance indexes.
+  - User applied Migration 003 manually in pgAdmin.
+  - Verified live database state using read-only catalog query (`src/db/verify_schema.js`), confirming all columns and indexes in PostgreSQL 16 without re-executing migrations.
+  - Upgraded `src/db/migrate.js` to implement safe migration history tracking via `schema_migrations`, with automated baseline reconciliation for manual pgAdmin runs (001, 002, 003) and transactional execution for pending migrations. Hardened baseline checks to require all artifacts (8 tables for 001; index for 002; 3 columns and 2 indexes for 003) to prevent false-positive baselines on partial schemas.
+- Route mounting & Zod Modernization:
+  - Mounted `doctorsRouter` at `/api/v1/doctors` in `src/app.js`.
+  - Replaced deprecated Zod `.datetime({ offset: true })` with Zod 4 recommended `z.iso.datetime({ offset: true })` across slot query and create/update schemas in `src/routes/doctors.js`.
+
+**Verification:**
+- Vitest suite run: `npm test` executed across all suites.
+- Results: 4 test files passed, 63 tests passed (0 failures).
+  - `tests/health.test.js`: 2 passed (health check and 404 handler).
+  - `tests/auth.test.js`: 25 passed (Phase 2 identity and RBAC regressions).
+  - `tests/doctors.test.js`: 21 passed (profile reading, update, validation, discoverability policy, pagination, and search filters).
+  - `tests/slots.test.js`: 15 passed (slot creation, overlap conflict detection, past date rejection, ownership authorization, booked/referenced deletion protections, and public slot listing).
+- Test isolation: HTTP tests mock database pool and do not mutate the local PostgreSQL database.
+- Database catalog verification: Inspected `information_schema.columns` and `pg_indexes` for `doctor_profiles` and `availability_slots`, confirming columns (`verification_status`, `updated_at`) and indexes (`idx_doctor_profiles_discoverable`, `idx_slots_doctor_status_start`) in PostgreSQL 16.
+- Manual verification: The developer is currently conducting manual HTTP verification using Thunder Client before committing.
+
+## Next Phase — Phase 4: Appointment Booking
+
+Implement slot reservation, booking transactions, idempotency key tracking, and concurrency protection against double-booking.
 
 ## Working Rule
 

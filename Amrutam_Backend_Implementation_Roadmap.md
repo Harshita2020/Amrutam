@@ -35,13 +35,20 @@
 
 ## Phase 3 — Doctor Profiles, Availability, and Search
 
-- Create and update doctor profiles.
-- Manage available appointment slots.
-- Search and filter doctors.
-- Validate availability and permissions.
-- Test endpoints and database queries.
+**Status: Complete (verified)**
 
-**Exit criteria:** Authorized users can manage appropriate doctor/slot data, and search returns expected results.
+- Create and update doctor profiles with strict field allow-listing (`fullName`, `specialty`/`specialization`, `bio`).
+- Exclude privileged fields (`role`, `userId`, `verificationStatus`) to prevent self-approval or privilege escalation.
+- Public search and filtering by specialty and full-text substring (`q`), with cursor-based pagination.
+- Discoverability policy enforced: only active (`is_active = TRUE`) and approved (`verification_status = 'approved'`) doctors are public.
+- Doctor availability slot management: create, list, update, and delete.
+- Slot validation and transactional overlap prevention using row-level locking (`SELECT ... FOR UPDATE`) to prevent race conditions.
+- Strict ownership and resource authorization: doctors cannot update or delete other doctors' slots or profiles.
+- Deletion protection: booked and consultation-referenced slots cannot be deleted.
+- Additive migration `003_doctor_profiles_and_slots.sql` added and manually applied via pgAdmin; migration runner `src/db/migrate.js` proposed with `schema_migrations` tracking and baselining.
+- Automated tests: 4 test suites, 63 tests passing (including regression for Phase 1 health and Phase 2 auth).
+
+**Exit criteria:** Authorized users can manage appropriate doctor/slot data, and search returns expected results. (Verified).
 
 ## Phase 4 — Appointment Booking
 

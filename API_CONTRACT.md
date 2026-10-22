@@ -1,7 +1,7 @@
 # Amrutam Telemedicine Backend — API Contract
 
 **Document type:** API contract and endpoint reference  
-**Status:** Phase 2 authentication endpoints are implemented and tested; other endpoints remain planned unless explicitly verified in the repository  
+**Status:** Phase 2 authentication endpoints and Phase 3 doctor profiles, discovery search, and availability endpoints are implemented and tested; other endpoints remain planned unless explicitly verified in the repository  
 **Base path:** `/api/v1`  
 **Protocol:** HTTPS in deployed environments; JSON request/response bodies  
 **Architecture:** Node.js, Express, PostgreSQL, modular monolith
@@ -141,7 +141,7 @@ Malformed JSON and invalid authentication request fields return `400 VALIDATION_
 
 ## 3. Endpoint inventory
 
-Authentication paths in this section are implemented. Other paths remain proposed targets, not a claim that the routes already exist. The readiness path is `/api/v1/health/ready`; `/api/v1/ready` is not registered.
+Authentication and doctor/availability paths in this section are implemented and verified. Other paths remain proposed targets, not a claim that the routes already exist. The readiness path is `/api/v1/health/ready`; `/api/v1/ready` is not registered.
 
 | Method | Path | Access | Purpose | Roadmap phase |
 |---|---|---|---|---|
@@ -150,13 +150,13 @@ Authentication paths in this section are implemented. Other paths remain propose
 | `POST` | `/auth/register` | Public, global rate limit | Register patient or doctor | 2 — implemented |
 | `POST` | `/auth/login` | Public, global rate limit | Verify credentials and issue access token | 2 — implemented |
 | `GET` | `/auth/me` | Authenticated | Get current user's safe profile | 2 — implemented |
-| `GET` | `/doctors` | Public or policy-defined | Search/filter doctors | 3 |
-| `GET` | `/doctors/:doctorId` | Public or policy-defined | Read public doctor profile | 3 |
-| `PATCH` | `/doctors/me` | Doctor | Update own permitted profile fields | 3 |
-| `GET` | `/doctors/:doctorId/slots` | Public or authenticated per policy | List available slots | 3 |
-| `POST` | `/doctors/me/slots` | Doctor | Create availability slots | 3 |
-| `PATCH` | `/doctors/me/slots/:slotId` | Owning doctor/admin | Update an eligible slot | 3 |
-| `DELETE` | `/doctors/me/slots/:slotId` | Owning doctor/admin | Remove/cancel an eligible unbooked slot | 3 |
+| `GET` | `/doctors` | Public discovery | Search/filter doctors | 3 — implemented |
+| `GET` | `/doctors/:doctorId` | Public discovery | Read public doctor profile | 3 — implemented |
+| `PATCH` | `/doctors/me` | Authenticated Doctor | Update own permitted profile fields | 3 — implemented |
+| `GET` | `/doctors/:doctorId/slots` | Public discovery | List available slots | 3 — implemented |
+| `POST` | `/doctors/me/slots` | Authenticated Doctor | Create availability slots | 3 — implemented |
+| `PATCH` | `/doctors/me/slots/:slotId` | Authenticated Doctor | Update an eligible own slot | 3 — implemented |
+| `DELETE` | `/doctors/me/slots/:slotId` | Authenticated Doctor | Remove an eligible own unbooked slot | 3 — implemented |
 | `POST` | `/bookings` | Patient | Book a slot; idempotent and concurrency-safe | 4 |
 | `GET` | `/bookings/me` | Patient | List own bookings | 4 |
 | `GET` | `/bookings/:bookingId` | Patient/assigned doctor/admin per policy | Read booking with resource checks | 4 |
@@ -280,50 +280,165 @@ The middleware accepts only `Authorization: Bearer <token>`, verifies HS256 sign
 
 **Errors:** `401 UNAUTHENTICATED`; unexpected database failures return a generic `500 INTERNAL_SERVER_ERROR` without database details.
 
-## 5. Doctor search and availability contract
+## 5. Phase 3 — Doctor discovery, profiles, and availability contract
 
 ### 5.1 `GET /doctors`
 
-**Purpose:** Search and filter doctor profiles.
+**Purpose:** Search and filter discoverable doctor profiles with cursor-based pagination.
 
-**Proposed query parameters:**
-- `specialty`
-- `q` for supported text search
-- `limit`
-- `cursor`
-- Optional availability/date filters only when implemented and indexed.
+**Access:** Public.
 
-Rules:
-- Validate and allow-list filters and sort order.
-- Exclude private/internal fields and unapproved doctor profiles if the product policy requires approval.
-- Paginate results and set a maximum page size.
-- Return only information intended for public discovery.
+**Query parameters:**
+- `specialty` or `specialization` (string, optional, 1–100 chars): case-insensitive match against doctor specialization.
+- `q` (string, optional, 1–100 chars): substring search matching doctor `full_name`, `specialization`, or `bio`.
+- `limit` (integer, optional, default: 10, min: 1, max: 50): maximum number of profiles returned.
+- `cursor` (string, optional): base64-encoded token `{ "createdAt": "...", "id": "..." }` for deterministic descending pagination.
+
+**Discoverability policy:**
+- A doctor profile is returned in search results if and only if `users.is_active = TRUE` and `doctor_profiles.verification_status = 'approved'`.
+- Unapproved (`pending`, `rejected`) or inactive doctors are omitted.
+
+**Success:** `200 OK`.
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "fullName": "Dr. Aisha Sharma",
+      "specialty": "Ayurvedic Medicine",
+      "specialization": "Ayurvedic Medicine",
+      "bio": "Expert in herbal medicine",
+      "createdAt": "2026-10-22T10:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "limit": 10,
+    "nextCursor": "eyj..."
+  }
+}
+```
+
+**Errors:** `400 VALIDATION_ERROR` (invalid limit, malformed cursor, or unaccepted filter parameters).
 
 ### 5.2 `GET /doctors/:doctorId`
 
-**Purpose:** Return a discoverable doctor profile.
+**Purpose:** Read a single doctor's public profile.
 
-**Access:** Public or authenticated according to product policy.
+**Access:** Public.
+
+**Path parameter:**
+- `doctorId`: UUID string.
+
+**Rules:**
+- Requires valid UUID; invalid format yields `400 INVALID_ID`.
+- Requires the doctor to be active and approved (`verification_status = 'approved'`). If not found, inactive, or unapproved, returns `404 DOCTOR_NOT_FOUND`.
+
+**Success:** `200 OK`.
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "fullName": "Dr. Aisha Sharma",
+    "specialty": "Ayurvedic Medicine",
+    "specialization": "Ayurvedic Medicine",
+    "bio": "Expert in herbal medicine",
+    "createdAt": "2026-10-22T10:00:00.000Z"
+  }
+}
+```
 
 **Errors:** `400 INVALID_ID`, `404 DOCTOR_NOT_FOUND`.
 
 ### 5.3 `PATCH /doctors/me`
 
-**Purpose:** Update the authenticated doctor's permitted profile fields.
+**Purpose:** Authenticated doctor updates permitted fields on their own profile.
 
-**Access:** Doctor.
+**Access:** Authenticated user with role `doctor`.
 
-Rules:
-- Derive the doctor identity from the verified token.
-- Do not allow the doctor to self-approve verification or change privileged account roles.
-- Validate allowed fields and reject unknown/privileged fields.
+**Headers:** `Authorization: Bearer <access-token>`.
 
-### 5.4 Availability endpoints
+**Request body:**
+```json
+{
+  "fullName": "Dr. Aisha Sharma",
+  "specialty": "Clinical Ayurveda",
+  "bio": "Updated professional bio"
+}
+```
 
-`GET /doctors/:doctorId/slots` lists available slots. `POST /doctors/me/slots` creates slots. Slot updates/deletions are restricted to the owning doctor or authorized admin.
+**Rules:**
+- Role must be `doctor`; patients receive `403 FORBIDDEN`.
+- Caller identity is derived strictly from verified JWT `sub` (`req.auth.userId`).
+- Strict allow-list of editable fields: `fullName` (1–120 chars), `specialty`/`specialization` (1–100 chars), `bio` (null or up to 1000 chars).
+- Reject privileged and unknown fields (`role`, `userId`, `verificationStatus`, `verification_status`, `is_active`, `password`, etc.) with `400 VALIDATION_ERROR`. Doctors cannot self-approve or escalate privileges.
+- At least one field must be supplied.
 
-Proposed create-slot request:
+**Success:** `200 OK`.
 
+```json
+{
+  "data": {
+    "id": "uuid",
+    "fullName": "Dr. Aisha Sharma",
+    "specialty": "Clinical Ayurveda",
+    "specialization": "Clinical Ayurveda",
+    "bio": "Updated professional bio",
+    "createdAt": "2026-10-22T10:00:00.000Z",
+    "updatedAt": "2026-10-22T11:00:00.000Z"
+  }
+}
+```
+
+**Errors:** `400 VALIDATION_ERROR`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 DOCTOR_NOT_FOUND`.
+
+### 5.4 `GET /doctors/:doctorId/slots`
+
+**Purpose:** List future available slots for a discoverable doctor.
+
+**Access:** Public.
+
+**Path parameter:** `doctorId` (UUID).
+
+**Query parameters:**
+- `from` (ISO 8601 string, optional): filter slots starting at or after timestamp.
+- `to` (ISO 8601 string, optional): filter slots ending at or before timestamp.
+- `limit` (integer, optional, default: 50, max: 100).
+
+**Rules:**
+- Requires discoverable doctor (`verification_status = 'approved'` and `is_active = TRUE`), else `404 DOCTOR_NOT_FOUND`.
+- Returns only slots where `status = 'available'` and `starts_at >= NOW()`. Elapsed, booked, and unavailable slots are excluded.
+- Ordered by `starts_at ASC`.
+
+**Success:** `200 OK`.
+
+```json
+{
+  "data": [
+    {
+      "id": "slot-uuid",
+      "doctorId": "doctor-uuid",
+      "startsAt": "2026-10-25T09:00:00.000Z",
+      "endsAt": "2026-10-25T09:30:00.000Z",
+      "status": "available",
+      "createdAt": "2026-10-22T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+**Errors:** `400 INVALID_ID`, `400 VALIDATION_ERROR`, `404 DOCTOR_NOT_FOUND`.
+
+### 5.5 `POST /doctors/me/slots`
+
+**Purpose:** Authenticated doctor creates an availability slot.
+
+**Access:** Authenticated user with role `doctor`.
+
+**Headers:** `Authorization: Bearer <access-token>`.
+
+**Request body:**
 ```json
 {
   "startsAt": "2026-10-25T09:00:00Z",
@@ -331,11 +446,83 @@ Proposed create-slot request:
 }
 ```
 
-Rules:
-- `endsAt` must be after `startsAt`.
-- Reject invalid, overlapping, duplicate, or otherwise unavailable slots according to the final slot model.
-- Use database constraints/transactions to prevent races.
-- Do not allow deletion of a booked slot without a defined cancellation/reassignment workflow.
+**Rules:**
+- `endsAt` must be strictly after `startsAt`.
+- `startsAt` must be in the future (`startsAt > NOW()`).
+- Database concurrency control: acquires row lock on `doctor_profiles` for the acting doctor inside a transaction (`SELECT user_id FROM doctor_profiles WHERE user_id = $1 FOR UPDATE`) to serialize slot writes.
+- Enforces non-overlap against all non-unavailable slots of that doctor: `starts_at < new_ends_at AND ends_at > new_starts_at`.
+- Overlapping intervals return `409 SLOT_OVERLAP`.
+
+**Success:** `201 Created`.
+
+```json
+{
+  "data": {
+    "id": "slot-uuid",
+    "doctorId": "doctor-uuid",
+    "startsAt": "2026-10-25T09:00:00.000Z",
+    "endsAt": "2026-10-25T09:30:00.000Z",
+    "status": "available",
+    "createdAt": "2026-10-22T10:00:00.000Z"
+  }
+}
+```
+
+**Errors:** `400 VALIDATION_ERROR`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 DOCTOR_NOT_FOUND`, `409 SLOT_OVERLAP`.
+
+### 5.6 `PATCH /doctors/me/slots/:slotId`
+
+**Purpose:** Owning doctor updates timing or availability status of an unbooked slot.
+
+**Access:** Authenticated user with role `doctor`.
+
+**Path parameter:** `slotId` (UUID).
+
+**Request body:**
+```json
+{
+  "startsAt": "2026-10-25T10:00:00Z",
+  "endsAt": "2026-10-25T10:30:00Z",
+  "status": "unavailable"
+}
+```
+
+**Rules:**
+- Doctor identity derived from token. If `slot.doctor_id !== req.auth.userId`, returns `403 FORBIDDEN`.
+- Booked slots (`status = 'booked'`) cannot be modified; returns `409 SLOT_ALREADY_BOOKED`.
+- If timing is updated, checks `endsAt > startsAt`, `startsAt > NOW()`, and validates non-overlap against other active slots.
+- Status may be toggled between `'available'` and `'unavailable'`. Cannot be set to `'booked'` by doctor.
+
+**Success:** `200 OK`.
+
+**Errors:** `400 INVALID_ID`, `400 VALIDATION_ERROR`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 SLOT_NOT_FOUND`, `409 SLOT_ALREADY_BOOKED`, `409 SLOT_OVERLAP`.
+
+### 5.7 `DELETE /doctors/me/slots/:slotId`
+
+**Purpose:** Owning doctor deletes an unbooked, unreferenced slot.
+
+**Access:** Authenticated user with role `doctor`.
+
+**Path parameter:** `slotId` (UUID).
+
+**Rules:**
+- Slot must belong to authenticated doctor (`403 FORBIDDEN` if owned by another doctor).
+- Booked slots cannot be deleted (`409 SLOT_ALREADY_BOOKED`).
+- Slots referenced by existing `consultations` cannot be deleted (`409 SLOT_REFERENCED`).
+- Performs hard deletion of eligible slot record.
+
+**Success:** `200 OK`.
+
+```json
+{
+  "data": {
+    "id": "slot-uuid",
+    "deleted": true
+  }
+}
+```
+
+**Errors:** `400 INVALID_ID`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 SLOT_NOT_FOUND`, `409 SLOT_ALREADY_BOOKED`, `409 SLOT_REFERENCED`.
 
 ## 6. Phase 4 — Booking contract
 

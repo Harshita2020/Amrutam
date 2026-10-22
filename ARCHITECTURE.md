@@ -3,7 +3,7 @@
 **Document type:** Main architecture reference  
 **Status:** Target architecture / implementation guide  
 **Stack:** Node.js, Express, PostgreSQL, REST API  
-**Current implementation status:** Phase 1 foundation and Phase 2 core identity are implemented and verified. Most other domain modules in this document remain planned and must not be treated as implemented until code and tests confirm them.
+**Current implementation status:** Phase 1 foundation, Phase 2 core identity, and Phase 3 doctor discovery, profiles, and availability slots are implemented and verified (63 automated tests passing). Remaining domain modules in this document remain planned and must not be treated as implemented until code and tests confirm them.
 
 ## 1. Purpose and source requirements
 
@@ -214,15 +214,14 @@ erDiagram
     }
 ```
 
-**Schema notes:**
-- This is a logical target, not a claim that every column/table exists in the current migration. Inspect and reconcile it with the actual schema before coding.
-- Use consistent primary-key types across related tables. If the existing migration already uses another type, keep it consistent or change it through a deliberate migration.
-- Add unique constraints for normalized user email and any doctor registration identifiers that must be unique.
-- Add foreign keys, `NOT NULL`, check constraints, indexes, and appropriate delete/update rules.
-- Enforce slot exclusivity at the database level, not only in application code. The exact constraint depends on the chosen slot model (one consultation per slot, or non-overlapping time ranges).
-- Store monetary values as integer minor units plus currency, not floating-point values.
-- Prescription data and audit metadata should be validated and access-controlled; avoid unnecessary sensitive information in logs.
-- Add `created_at`/`updated_at` where useful. Consider soft deletion/status transitions for records that must be retained for audit/compliance.
+**Schema notes and verified physical implementation:**
+- **Reconciliation with logical target:** In the physical schema established in `001_initial_schema.sql` and additive migrations, `doctor_profiles` functions as the doctor entity, with `user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE` anchoring doctor identity directly to the verified `users` account.
+- **Doctor Profiles (`doctor_profiles`):** Columns: `user_id` (PK, FK), `full_name` (text, not null), `specialization` (text, not null), `bio` (text, nullable), `created_at` (timestamptz), plus Migration 003 columns: `verification_status` (text not null default `'pending'`, check: `'pending', 'approved', 'rejected'`), and `updated_at` (timestamptz default `now()`).
+- **Doctor Discoverability Index:** Migration 003 added `idx_doctor_profiles_discoverable` on `(verification_status, specialization)` to optimize public doctor search queries filtered by status and specialty.
+- **Availability Slots (`availability_slots`):** Columns: `id` (UUID PK), `doctor_id` (UUID FK to `doctor_profiles.user_id`), `starts_at` (timestamptz), `ends_at` (timestamptz), `status` (text check `'available', 'booked', 'unavailable'`), `created_at` (timestamptz), and Migration 003 `updated_at` (timestamptz). Constraints: `ends_at > starts_at`, unique `(doctor_id, starts_at)`.
+- **Slot Query & Concurrency Indexes:** Existing index `idx_slots_doctor_start` plus Migration 003 index `idx_slots_doctor_status_start` on `(doctor_id, status, starts_at)`. Application concurrency control acquires row-level locks on the doctor profile (`SELECT user_id FROM doctor_profiles WHERE user_id = $1 FOR UPDATE`) within transactions to serialize concurrent slot creations and prevent interval overlap races.
+- **Normalized Email Index:** Migration 002 added unique index `users_email_normalized_uidx` on `lower(btrim(email))`.
+- **Audit Logs & Consultations:** Retained from `001_initial_schema.sql` for Phase 4 booking and Phase 6 consultations. Slot deletion safeguards strictly verify that slots referenced in `consultations` or marked `'booked'` cannot be deleted.
 
 ## 7. API design and contract conventions
 

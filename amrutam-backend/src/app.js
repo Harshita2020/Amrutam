@@ -7,6 +7,7 @@ import healthRouter from './routes/health.js';
 import { notFound } from './middleware/not-found.js';
 import { errorHandler } from './middleware/error-handler.js';
 import authRouter from './routes/auth.js';
+import doctorsRouter from './routes/doctors.js';
 
 const app = express();
 
@@ -18,6 +19,7 @@ app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 100, standardHeaders: 'draf
 
 app.use('/api/v1/health', healthRouter);
 app.use('/api/v1/auth', authRouter);
+app.use('/api/v1/doctors', doctorsRouter);
 
 app.use(notFound);
 app.use(errorHandler);
